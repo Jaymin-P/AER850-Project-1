@@ -1,0 +1,364 @@
+# =========================
+# Step 1 — Getting the data ready
+# =========================
+import pandas as pd
+import numpy as np
+
+# Load the dataset from the file
+data = pd.read_csv('Data/Project 1 Data.csv')
+
+# Remove any rows that have missing values
+data = data.dropna().reset_index(drop=True)
+
+# Make sure the label column is named 'step' for consistency
+if 'Step' in data.columns and 'step' not in data.columns:
+    data = data.rename(columns={'Step': 'step'})
+
+# Print info about the dataset
+print('Shape:', data.shape)
+print('Columns:', data.columns.tolist())
+print('Class counts:\n', data['step'].value_counts().sort_index())
+print('Unique steps:', data['step'].nunique())
+
+# =========================
+# Step 2 — Splitting the data for training and testing
+# =========================
+import numpy as np
+from sklearn.model_selection import StratifiedShuffleSplit
+
+# Create a helper column so that the split keeps class proportions even
+data['step_categories'] = data['step'].astype(int)
+
+# Split the data so that 80% is training and 20% is testing
+my_splitter = StratifiedShuffleSplit(n_splits = 1,
+                                     test_size = 0.2,
+                                     random_state = 42)
+
+for train_index, test_index in my_splitter.split(data, data['step_categories']):
+    strat_data_train = data.loc[train_index].reset_index(drop=True)
+    strat_data_test  = data.loc[test_index].reset_index(drop=True)
+
+# Remove the helper column since it’s no longer needed
+strat_data_train = strat_data_train.drop(columns=['step_categories'], axis = 1)
+strat_data_test  = strat_data_test.drop(columns=['step_categories'], axis = 1)
+
+# =========================
+# Set up X (features) and y (labels)
+# =========================
+y_train = strat_data_train['step']
+X_train = strat_data_train.drop(columns=['step'])
+y_test  = strat_data_test['step']
+X_test  = strat_data_test.drop(columns=['step'])
+
+# Double-check that shapes and class balance look fine
+print('Train shape:', X_train.shape, ' Test shape:', X_test.shape)
+print('Train class counts:\n', y_train.value_counts().sort_index())
+print('Test  class counts:\n', y_test.value_counts().sort_index())
+
+# =========================
+# Step 3 — Basic visualizations on training data
+# =========================
+import matplotlib.pyplot as plt
+
+# Clear any old plots
+plt.close('all')
+
+# Combine X and y back for easier plotting
+train_df = X_train.copy()
+train_df['step'] = y_train.values
+
+# Show how balanced the training classes are
+plt.figure(figsize=(6,4))
+y_train.value_counts().sort_index().plot(kind='bar')
+plt.xlabel('Step (class)')
+plt.ylabel('Count')
+plt.title('Class Balance (Training Data)')
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.tight_layout()
+plt.show()
+
+# Show how each feature (X, Y, Z) varies with the step label
+train_df.boxplot(column='X', by='step')
+plt.title('X by Step (Training Data)'); plt.suptitle('')
+plt.xlabel('Step'); plt.ylabel('X')
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.tight_layout(); plt.show()
+
+train_df.boxplot(column='Y', by='step')
+plt.title('Y by Step (Training Data)'); plt.suptitle('')
+plt.xlabel('Step'); plt.ylabel('Y')
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.tight_layout(); plt.show()
+
+train_df.boxplot(column='Z', by='step')
+plt.title('Z by Step (Training Data)'); plt.suptitle('')
+plt.xlabel('Step'); plt.ylabel('Z')
+plt.grid(True, linestyle=':', alpha=0.6)
+plt.tight_layout(); plt.show()
+
+# =========================
+# Step 4 — Checking correlations between features
+# =========================
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Use only training data to calculate correlations
+corr_df = strat_data_train.copy()
+
+# Find correlation values between numeric columns
+corr_matrix = corr_df.corr(numeric_only=True, method='pearson')
+print('\nPearson correlation matrix (Training Data):')
+print(corr_matrix.round(3))
+
+# Plot a heatmap to visualize how strongly each pair is related
+plt.figure(figsize=(6,5))
+sns.heatmap(np.abs(corr_matrix), annot=True, fmt='.2f', cmap='viridis')
+plt.title('Absolute Pearson Correlation (Training Data)')
+plt.tight_layout()
+plt.show()
+
+# Mark correlations above 0.8 to check for features that are too similar
+threshold = 0.8
+masked_corr_matrix = (np.abs(corr_matrix) < threshold).astype(int)
+plt.figure(figsize=(6,5))
+sns.heatmap(masked_corr_matrix, annot=True, cmap='Blues', cbar=False)
+plt.title(f'Correlation < {threshold} Mask (Training Data)')
+plt.tight_layout()
+plt.show()
+
+# Show how each feature relates to the target variable
+print('\nAbsolute correlation with target (Training Data):')
+print('X:', np.abs(corr_df['step'].corr(corr_df['X'], method='pearson')).round(3))
+print('Y:', np.abs(corr_df['step'].corr(corr_df['Y'], method='pearson')).round(3))
+print('Z:', np.abs(corr_df['step'].corr(corr_df['Z'], method='pearson')).round(3))
+
+# =========================
+# Step 5 — Building and tuning classification models
+# =========================
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, StratifiedKFold
+
+# Build model pipelines so scaling happens safely inside CV
+pipe_logreg = Pipeline([
+    ('scaler', StandardScaler()),
+    ('clf', LogisticRegression(max_iter=5000, multi_class='auto', solver='lbfgs'))
+])
+
+pipe_svc = Pipeline([
+    ('scaler', StandardScaler()),
+    ('clf', SVC(probability=True, random_state=42))
+])
+
+# Random Forest doesn’t need scaling but we keep a similar format
+pipe_rf = Pipeline([
+    ('clf', RandomForestClassifier(random_state=42))
+])
+
+pipe_knn = Pipeline([
+    ('scaler', StandardScaler()),
+    ('clf', KNeighborsClassifier())
+])
+
+# Define parameter options for tuning each model
+param_logreg = {
+    'clf__C': [0.1, 1, 3, 10],
+    'clf__penalty': ['l2']
+}
+
+param_svc = {
+    'clf__kernel': ['rbf', 'linear'],
+    'clf__C': [0.5, 1, 3, 10],
+    'clf__gamma': ['scale', 'auto']
+}
+
+param_rf = {
+    'clf__n_estimators': [200, 400, 600],
+    'clf__max_depth': [None, 8, 12, 16],
+    'clf__min_samples_leaf': [1, 2, 4]
+}
+
+# KNN uses randomized search since it has more possible settings
+param_knn = {
+    'clf__n_neighbors': list(range(1, 51)),
+    'clf__weights': ['uniform', 'distance'],
+    'clf__p': [1, 2]
+}
+
+# Use 5-fold stratified cross-validation and F1-macro to handle class imbalance
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+scoring = 'f1_macro'
+
+# Train and tune each model
+gs_logreg = GridSearchCV(pipe_logreg, param_logreg, scoring=scoring, cv=cv,
+                         n_jobs=-1, refit=True, verbose=1, return_train_score=True).fit(X_train, y_train)
+
+gs_svc = GridSearchCV(pipe_svc, param_svc, scoring=scoring, cv=cv,
+                      n_jobs=-1, refit=True, verbose=1, return_train_score=True).fit(X_train, y_train)
+
+gs_rf = GridSearchCV(pipe_rf, param_rf, scoring=scoring, cv=cv,
+                     n_jobs=-1, refit=True, verbose=1, return_train_score=True).fit(X_train, y_train)
+
+rs_knn = RandomizedSearchCV(pipe_knn, param_knn, n_iter=30, scoring=scoring, cv=cv,
+                            n_jobs=-1, random_state=42, refit=True, verbose=1, return_train_score=True).fit(X_train, y_train)
+
+# Display best CV results and parameters
+print('\n=== Best CV Results (f1_macro) ===')
+print('LogReg:', round(gs_logreg.best_score_, 4), '| params:', gs_logreg.best_params_)
+print('SVC   :', round(gs_svc.best_score_, 4),   '| params:', gs_svc.best_params_)
+print('RF    :', round(gs_rf.best_score_, 4),    '| params:', gs_rf.best_params_)
+print('KNN-RS:', round(rs_knn.best_score_, 4),   '| params:', rs_knn.best_params_)
+
+# Save the tuned models for later testing
+best_logreg = gs_logreg.best_estimator_
+best_svc    = gs_svc.best_estimator_
+best_rf     = gs_rf.best_estimator_
+best_knn    = rs_knn.best_estimator_
+
+models = {
+    'LogReg': best_logreg,
+    'SVC': best_svc,
+    'RF': best_rf,
+    'KNN': best_knn
+}
+
+# =========================
+# Step 6 — Testing model performance
+# =========================
+from sklearn.metrics import accuracy_score, precision_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+results = {}
+
+# Evaluate each trained model on the test set
+print('\n=== Test Set Performance ===')
+for name, mdl in models.items():
+    y_pred = mdl.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred, average='macro', zero_division=0)
+    f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
+    results[name] = {'accuracy': acc, 'precision_macro': prec, 'f1_macro': f1}
+    print(f"{name:6s} | accuracy: {acc:.4f} | precision(macro): {prec:.4f} | f1(macro): {f1:.4f}")
+
+# Find the best performer based on F1 score
+best_name = max(results, key=lambda k: results[k]['f1_macro'])
+best_model = models[best_name]
+print('\nSelected model (by f1_macro):', best_name, '->', results[best_name])
+
+# Create and display confusion matrix for the chosen model
+y_pred_best = best_model.predict(X_test)
+cm = confusion_matrix(y_test, y_pred_best)
+
+plt.figure(figsize=(6,5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+disp.plot(cmap='Blues', values_format='d', colorbar=False)
+plt.title(f'Confusion Matrix — {best_name} (Test Data)')
+plt.tight_layout()
+plt.show()
+
+# =========================
+# Step 7 — Combining models using stacking
+# =========================
+from sklearn.ensemble import StackingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, precision_score, f1_score, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+# Pick the two models with the highest F1 scores to combine
+if 'results' in globals() and isinstance(results, dict) and len(results) >= 2:
+    sorted_models = sorted(results.items(), key=lambda kv: kv[1]['f1_macro'], reverse=True)
+    top_names = [sorted_models[0][0], sorted_models[1][0]]
+else:
+    if all(k in models for k in ['SVC','RF']):
+        top_names = ['SVC','RF']
+    else:
+        top_names = list(models.keys())[:2]
+
+print('Stacking these two models:', top_names)
+
+# Create the stacking model with a logistic regression as the final learner
+stack = StackingClassifier(
+    estimators=[(top_names[0].lower(), models[top_names[0]]),
+                (top_names[1].lower(), models[top_names[1]])],
+    final_estimator=LogisticRegression(max_iter=5000),
+    stack_method='predict_proba',
+    passthrough=False,
+    n_jobs=-1
+)
+
+# Train the stacked model
+stack.fit(X_train, y_train)
+
+# Test the stacked model
+y_pred_stack = stack.predict(X_test)
+acc_stack  = accuracy_score(y_test, y_pred_stack)
+prec_stack = precision_score(y_test, y_pred_stack, average='macro', zero_division=0)
+f1_stack   = f1_score(y_test, y_pred_stack, average='macro', zero_division=0)
+
+print('\n=== Stacked Model Performance (Test) ===')
+print('accuracy:', round(acc_stack, 4))
+print('precision(macro):', round(prec_stack, 4))
+print('f1(macro):', round(f1_stack, 4))
+
+# Show confusion matrix for the stacked model
+cm_stack = confusion_matrix(y_test, y_pred_stack)
+print('\nConfusion Matrix (Stacked):')
+print(cm_stack)
+
+plt.figure(figsize=(6,5))
+disp = ConfusionMatrixDisplay(confusion_matrix=cm_stack)
+disp.plot(cmap='Blues', values_format='d', colorbar=False)
+plt.title(f'Confusion Matrix — Stacked ({top_names[0]} + {top_names[1]})')
+plt.tight_layout()
+plt.show()
+
+
+# =========================
+# Step 8 — Saving and using the final model
+# =========================
+import os
+import numpy as np
+from joblib import dump, load
+
+# Pick which model to save 
+if 'stack' in globals():
+    selected_name = 'Stacked'
+    selected_model = stack
+elif 'results' in globals() and isinstance(results, dict) and len(results) > 0:
+    selected_name = max(results, key=lambda k: results[k]['f1_macro'])
+    selected_model = models[selected_name]
+else:
+    selected_name = 'SVC' if 'SVC' in models else list(models.keys())[0]
+    selected_model = models[selected_name]
+
+print('Selected model for packaging:', selected_name)
+
+
+os.makedirs('models', exist_ok=True)
+model_path = 'models/best_model.joblib'
+dump(selected_model, model_path)
+print('Saved model to:', model_path)
+
+# Load it back to simulate reuse
+loaded_model = load(model_path)
+
+# Test the model on new coordinates
+new_points = np.array([
+    [9.375, 3.0625, 1.51],
+    [6.995, 5.125, 0.3875],
+    [0.0000, 3.0625, 1.93],
+    [9.400, 3.0000, 1.80],
+    [9.400, 3.0000, 1.30]
+], dtype=float)
+
+pred_steps = loaded_model.predict(new_points)
+
+# Print the predictions in a readable format
+print('\nPredictions for provided coordinates:')
+for pt, pred in zip(new_points, pred_steps):
+    print(f'{pt.tolist()}  => step = {int(pred)}')
